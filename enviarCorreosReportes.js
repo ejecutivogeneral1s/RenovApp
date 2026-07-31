@@ -1,17 +1,27 @@
+// Variables globales (las iremos usando a lo largo del proyecto)
+const NOMBRE_HOJA_BD = 'BD';
+
+/**
+ * Esta función se ejecuta automáticamente al abrir el archivo de Sheets.
+ * Crea nuestro menú personalizado.
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('🚀 RenovApp')
+    .addItem('Ejecutar RenovApp', 'ejecutarRenovApp')
+    .addToUi();
+}
+
+
 /**
  * Envía los correos electrónicos a los ejecutivos con los enlaces de sus reportes.
- *
- * Regla de Negocio: Si el archivo del reporte ya existía en Drive, no se genera un nuevo urlArchivo.
- * En este caso, no es necesario enviar el correo electrónico, por lo que la función lo omite de forma segura.
- *
- * @param {Array<Object>} paquetes Lista de paquetes de reportes de renovaciones a procesar.
  */
 function enviarCorreosReportes(paquetes) {
   paquetes.forEach(paquete => {
     // REGLA 1: Si no hay correos configurados, saltamos
     if (!paquete.emails || paquete.emails.trim() === '') return;
 
-    // REGLA 2 (¡NUEVA!): Si no hay URL (porque el archivo se omitió al ya existir), saltamos
+    // REGLA 2: Si no hay URL (porque el archivo se omitió al ya existir), saltamos
     // Esto evita enviar correos con enlaces rotos o notificaciones innecesarias cuando el archivo ya existe.
     if (!paquete.urlArchivo) {
       console.log(`🚫 Correo omitido para ${paquete.nombre}: No se generó un nuevo archivo (ya existía).`);
@@ -45,4 +55,1072 @@ function enviarCorreosReportes(paquetes) {
 
     console.log(`📧 Correo enviado a: ${paquete.emails}`);
   });
+}
+
+/**
+ * Mueve el archivo Excel procesado a la carpeta de archivo histórico.
+ */
+function moverArchivoAProcesados(archivoExcel, idCarpetaProcesados) {
+  if (!idCarpetaProcesados) throw new Error("Falta el ID en CarpetaProcesados dentro de Config.");
+
+  const carpetaProcesados = DriveApp.getFolderById(idCarpetaProcesados);
+  archivoExcel.moveTo(carpetaProcesados);
+  console.log(`📁 Archivo original movido a Procesados: ${archivoExcel.getName()}`);
+}
+
+/**
+ * 🚀 LA FUNCIÓN MAESTRA 🚀
+ * Orquesta todos los Módulos del 1 al 5.
+ * ¡Híbrida! Funciona desde el Menú (con alertas) y desde el Editor (con logs).
+ */
+function ejecutarRenovApp() {
+  let ui = null;
+  try {
+    ui = SpreadsheetApp.getUi(); // Intentamos cargar la interfaz gráfica
+  } catch (e) {
+    console.log("🖥️ Ejecutando en modo desarrollador (Editor de Apps Script)");
+  }
+
+  // Helper para mostrar mensajes donde corresponda
+  const notificar = (mensaje) => {
+    if (ui) ui.alert(mensaje); // Si hay UI, muestra ventanita
+    console.log(`🔔 NOTIFICACIÓN: ${mensaje}`); // Siempre lo manda a la consola
+  };
+
+  try {
+    console.log('🚀 Iniciando proceso maestro RenovApp...');
+
+    // 1. Cargar configuración base
+    console.log('Cargando configuración base...');
+    const config = obtenerConfig();
+    const idCarpetaEntrada = config['CarpetaEntrada'];
+    const idCobranzapp = config['ArchivoCobranzapp'];
+    const idCarpetaRaiz = config['UbicacionReportes'];
+    const idCarpetaProcesados = config['CarpetaProcesados'];
+
+    if(!idCarpetaProcesados) throw new Error("Falta definir CarpetaProcesados en la pestaña Config.");
+
+    // 2. Obtener reglas de negocio
+    console.log('Descargando reglas de Cobranzapp y Configuración de Reportes...');
+    const clavesValidas = obtenerClavesValidas(idCobranzapp);
+    const polizasPendientesSet = obtenerPolizasPendientes(idCobranzapp);
+    const configReportes = obtenerConfiguracionReportes();
+
+    // 3. Buscar archivos en la bandeja de entrada
+    const carpetaEntrada = DriveApp.getFolderById(idCarpetaEntrada);
+    const archivosXLSX = carpetaEntrada.searchFiles("title contains '.xlsx' and trashed = false");
+
+    if (!archivosXLSX.hasNext()) {
+      notificar('No hay archivos .xlsx pendientes en la carpeta de entrada.');
+      return;
+    }
+
+    let archivosProcesados = 0;
+
+    // Bucle mágico: Procesará TODOS los .xlsx que encuentre en la carpeta
+    while (archivosXLSX.hasNext()) {
+      let archivo = archivosXLSX.next();
+      console.log(`===========================================`);
+      console.log(`📄 PROCESANDO ARCHIVO: ${archivo.getName()}`);
+
+      // Módulo 1: Lectura
+      let resultadoExcel = leerExcelTemporal(archivo);
+      let encabezados = resultadoExcel.datos[0];
+
+      // Módulo 2: Filtro Portero y Transformación
+      let datosFiltrados = filtrarDatosPorClave(resultadoExcel.datos, clavesValidas);
+      console.log(`🔍 Pólizas válidas encontradas tras filtro de claves: ${datosFiltrados.length}`);
+
+      if (datosFiltrados.length > 0) {
+        let tablaFinal = transformarDatos(datosFiltrados, encabezados, polizasPendientesSet);
+
+        console.log('💾 Escribiendo en la pestaña BD...');
+        guardarEnBD(tablaFinal);
+
+        // Módulo 3 y 4: Separación y Generación de Archivos
+        console.log('✂️ Separando datos en reportes...');
+        let paquetes = separarDatosPorReporte(tablaFinal, configReportes);
+
+        console.log('🏗️ Generando archivos finales en Google Drive...');
+        let paquetesConUrl = generarArchivosReportes(paquetes, idCarpetaRaiz);
+
+        // Módulo 5: Correos y Limpieza
+        console.log('📧 Enviando notificaciones por correo...');
+        enviarCorreosReportes(paquetesConUrl);
+      }
+
+      moverArchivoAProcesados(archivo, idCarpetaProcesados);
+      archivosProcesados++;
+      console.log(`✅ Archivo ${archivo.getName()} finalizado con éxito.`);
+    }
+
+    notificar(`¡Proceso Completado con Éxito! 🎉\n\nSe procesaron ${archivosProcesados} archivos Excel.\nLos reportes fueron generados, se enviaron los correos, y los archivos originales ya están en la carpeta de Procesados.`);
+
+  } catch (error) {
+    notificar(`🚨 Error grave en la ejecución: ${error.message}`);
+  }
+}
+
+/**
+ * Lee la pestaña Config de RenovApp y devuelve un objeto con las variables.
+ */
+function obtenerConfig() {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaConfig = libro.getSheetByName('Config');
+
+  if (!hojaConfig) throw new Error('No se encontró la pestaña Config');
+
+  const datos = hojaConfig.getDataRange().getValues();
+  const config = {};
+
+  // Recorremos la pestaña Config (asumiendo Col A: Nombre, Col B: Valor)
+  datos.forEach(fila => {
+    if (fila[0]) {
+      config[fila[0].toString().trim()] = fila[1];
+    }
+  });
+
+  return config;
+}
+
+/**
+ * Se conecta a Cobranzapp y extrae las claves válidas en un arreglo.
+ */
+function obtenerClavesValidas(idCobranzapp) {
+  try {
+    const libroCobranzapp = SpreadsheetApp.openById(idCobranzapp);
+    const hojaClaves = libroCobranzapp.getSheetByName('Catalogo_ClavesJMV');
+
+    if (!hojaClaves) throw new Error('No se encontró Catalogo_ClavesJMV en Cobranzapp');
+
+    const datosClaves = hojaClaves.getDataRange().getValues();
+
+    // Extraemos solo la columna A (índice 0), la limpiamos de espacios y quitamos vacíos
+    const claves = datosClaves
+      .map(fila => fila[0].toString().trim())
+      .filter(clave => clave !== '');
+
+    return claves;
+  } catch (error) {
+    throw new Error('Error al conectar con Cobranzapp: ' + error.message);
+  }
+}
+
+/**
+ * Función temporal para probar la conexión
+ */
+function probarConexion() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const config = obtenerConfig();
+    const idCobranzapp = config['ArchivoCobranzapp'];
+
+    if (!idCobranzapp) throw new Error('No hay ID de ArchivoCobranzapp en Config');
+
+    const claves = obtenerClavesValidas(idCobranzapp);
+
+    ui.alert(`¡Conexión Exitosa! 🚀\nSe encontraron ${claves.length} claves en el catálogo de Cobranzapp.`);
+  } catch (error) {
+    ui.alert(`🚨 Error: ${error.message}`);
+  }
+}
+
+/**
+ * Convierte un objeto de archivo Excel (.xlsx) a Google Sheets temporalmente,
+ * extrae sus datos y luego elimina el archivo temporal.
+ */
+function leerExcelTemporal(archivoExcel) {
+  const idExcel = archivoExcel.getId();
+
+  // 1. Convertir a Google Sheets temporal usando Drive API
+  let archivoConvertido;
+  try {
+    archivoConvertido = Drive.Files.create({
+      name: 'Temp_RenovApp_' + archivoExcel.getName(),
+      mimeType: MimeType.GOOGLE_SHEETS
+    }, archivoExcel.getBlob());
+  } catch(e) {
+    throw new Error("Error al convertir el Excel. Detalles: " + e.message);
+  }
+
+  // 2. Abrir el temporal y extraer toda la tabla de datos
+  const libroTemp = SpreadsheetApp.openById(archivoConvertido.id);
+  const hojaDatos = libroTemp.getSheets()[0];
+  const datosExcel = hojaDatos.getDataRange().getValues();
+
+  // 3. Destruir el archivo temporal para no ensuciar tu Drive
+  DriveApp.getFileById(archivoConvertido.id).setTrashed(true);
+
+  // Retornamos los datos y el objeto del archivo para poder moverlo después
+  return {
+    datos: datosExcel,
+    archivoExcel: archivoExcel
+  };
+}
+
+/**
+ * Función temporal para probar la lectura dinámica de la carpeta
+ */
+function probarLecturaDinamica() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    // Leemos la configuración para saber dónde buscar
+    const config = obtenerConfig();
+    const idCarpetaEntrada = config['CarpetaEntrada'];
+
+    if (!idCarpetaEntrada) {
+      throw new Error('Falta el ID en la variable CarpetaEntrada de la pestaña Config.');
+    }
+
+    // Entramos a la carpeta
+    const carpeta = DriveApp.getFolderById(idCarpetaEntrada);
+
+    // Buscamos cualquier archivo que tenga ".xlsx" en el nombre
+    const archivosXLSX = carpeta.searchFiles("title contains '.xlsx' and trashed = false");
+
+    let archivosEncontrados = 0;
+    let mensajeResultados = "";
+
+    // Iteramos sobre cada archivo encontrado
+    while (archivosXLSX.hasNext()) {
+      let archivo = archivosXLSX.next();
+      archivosEncontrados++;
+
+      let resultado = leerExcelTemporal(archivo);
+      mensajeResultados += `\n📄 ${archivo.getName()}: ${resultado.datos.length} filas.`;
+    }
+
+    if (archivosEncontrados === 0) {
+      ui.alert('No se encontraron archivos .xlsx en la carpeta de entrada.');
+    } else {
+      ui.alert(`¡Éxito! 🎉\nSe procesaron temporalmente ${archivosEncontrados} archivos:\n${mensajeResultados}`);
+    }
+
+  } catch (error) {
+    ui.alert(`🚨 Error: ${error.message}`);
+  }
+}
+
+/**
+ * Procesa los datos crudos del Excel, validando contra el catálogo de claves.
+ */
+function filtrarDatosPorClave(datosExcel, clavesValidas) {
+  if (datosExcel.length < 2) return []; // Si solo hay encabezados o el archivo está vacío
+
+  const encabezados = datosExcel[0];
+
+  // Buscamos dinámicamente la columna para evitar errores si cambia el formato
+  const indiceClave = encabezados.findIndex(enc => enc.toString().trim() === 'Clave de Agente');
+
+  if (indiceClave === -1) {
+    throw new Error('No se encontró la columna "Clave de Agente" en la fila 1 del Excel.');
+  }
+
+  // Filtramos las filas (el slice(1) es para ignorar la fila 1 de encabezados)
+  const filasFiltradas = datosExcel.slice(1).filter(fila => {
+    const claveFila = fila[indiceClave].toString().trim();
+    // Verificamos si la clave de la fila existe en nuestro arreglo de Cobranzapp
+    return clavesValidas.includes(claveFila);
+  });
+
+  return filasFiltradas;
+}
+
+/**
+ * Función temporal para probar a nuestro "Filtro Portero"
+ */
+function probarFiltroPortero() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const config = obtenerConfig();
+    const idCarpeta = config['CarpetaEntrada'];
+    const idCobranzapp = config['ArchivoCobranzapp'];
+
+    // 1. Le pedimos la lista al "cadenero" (Cobranzapp)
+    const clavesValidas = obtenerClavesValidas(idCobranzapp);
+
+    // 2. Buscamos un archivo en la carpeta
+    const carpeta = DriveApp.getFolderById(idCarpeta);
+    const archivosXLSX = carpeta.searchFiles("title contains '.xlsx' and trashed = false");
+
+    if (!archivosXLSX.hasNext()) throw new Error('No hay archivos .xlsx en la carpeta para probar.');
+
+    const archivo = archivosXLSX.next();
+    const resultadoExcel = leerExcelTemporal(archivo);
+    const totalOriginal = resultadoExcel.datos.length - 1; // Le restamos el encabezado
+
+    // 3. Pasamos los datos por el filtro
+    const datosFiltrados = filtrarDatosPorClave(resultadoExcel.datos, clavesValidas);
+
+    ui.alert(
+      `🛡️ Filtro Portero Aplicado 🛡️\n\n` +
+      `Archivo leído: ${archivo.getName()}\n` +
+      `Total original de pólizas: ${totalOriginal}\n` +
+      `✅ Pólizas aprobadas (Clave válida): ${datosFiltrados.length}\n` +
+      `❌ Pólizas descartadas: ${totalOriginal - datosFiltrados.length}`
+    );
+
+  } catch (error) {
+    ui.alert(`🚨 Error: ${error.message}`);
+  }
+}
+
+/**
+ * Calcula la edad aproximada basándose en el RFC.
+ * Año actual de referencia: 2026.
+ * Excluye RFCs de 9 o 12 caracteres (ej. Personas Morales).
+ */
+function calcularEdadPorRFC(rfc) {
+  if (!rfc) return '';
+
+  // Limpiamos los espacios en blanco por si vienen del Excel
+  const rfcString = rfc.toString().trim();
+
+  // NUEVA REGLA: Si tiene 9 o 12 caracteres, devolvemos vacío
+  if (rfcString.length === 9 || rfcString.length === 12) {
+    return '';
+  }
+
+  // Buscamos los primeros 6 números seguidos en el texto usando una Expresión Regular
+  const match = rfcString.match(/\d{6}/);
+  if (!match) return ''; // Por si es un formato raro que no tiene fecha
+
+  const anioString = match[0].substring(0, 2);
+  const anioNum = parseInt(anioString, 10);
+
+  // Tu regla: si es <= 26 es 2000s, si no, 1900s
+  const anioNacimiento = anioNum <= 26 ? 2000 + anioNum : 1900 + anioNum;
+
+  // Calculamos contra el año actual (2026)
+  return 2026 - anioNacimiento;
+}
+
+
+/**
+ * Transforma las filas crudas a la estructura final de RenovApp.
+ * ¡Incluye la nueva columna 'Cancelado'!
+ */
+function transformarDatos(datosFiltrados, encabezadosExcel, polizasPendientesSet) {
+  const indices = {
+    cliente: encabezadosExcel.indexOf('Cliente'),
+    poliza: encabezadosExcel.indexOf('Póliza'),
+    primaTotal: encabezadosExcel.indexOf('Prima total'),
+    fechaInicio: encabezadosExcel.indexOf('Fecha inicio vigencia'),
+    fechaFin: encabezadosExcel.indexOf('Fecha fin vigencia'),
+    aseguradora: encabezadosExcel.indexOf('Aseguradora'),
+    vendedor: encabezadosExcel.indexOf('Vendedor'),
+    formaPago: encabezadosExcel.indexOf('Forma pago'),
+    claveAgente: encabezadosExcel.indexOf('Clave de Agente'),
+    concepto: encabezadosExcel.indexOf('Concepto'),
+    rfc: encabezadosExcel.indexOf('RFC'),
+    formaCobro: encabezadosExcel.indexOf('Forma de cobro'),
+    ramo: encabezadosExcel.indexOf('Ramo')
+  };
+
+  const nuevosEncabezados = [
+    'Cliente', 'Póliza', 'Prima total', 'Fecha inicio vigencia', 'Fecha fin vigencia',
+    'Aseguradora', 'Vendedor', 'Forma pago', 'Clave de Agente', 'Concepto',
+    'Edad', 'Forma de cobro', 'Descargada', 'Capturada', 'Enviada',
+    'Prima renova', '%', 'Seguimiento', 'Promesa', 'Pagado', 'Pendientes en Cobranza', 'Cancelado', 'RFC', 'Ramo'
+  ];
+
+  const polizasSet = polizasPendientesSet || new Set();
+  const datosTransformados = datosFiltrados.map((fila) => {
+    const edad = calcularEdadPorRFC(fila[indices.rfc]);
+    const numeroPoliza = fila[indices.poliza] ? fila[indices.poliza].toString().trim() : '';
+    const tieneCobranzaPendiente = polizasSet.has(numeroPoliza);
+
+    return [
+      fila[indices.cliente],
+      numeroPoliza,
+      fila[indices.primaTotal],
+      fila[indices.fechaInicio],
+      fila[indices.fechaFin],
+      fila[indices.aseguradora],
+      fila[indices.vendedor],
+      fila[indices.formaPago],
+      fila[indices.claveAgente],
+      fila[indices.concepto],
+      edad,
+      fila[indices.formaCobro],
+      false, // Descargada (M)
+      false, // Capturada (N)
+      '',    // Enviada (O)
+      '',    // Prima renova (P)
+      '',    // % (Q) - Se calcula dinámicamente
+      '',    // Seguimiento (R)
+      false, // Promesa (S)
+      false, // Pagado (T)
+      tieneCobranzaPendiente, // Pendientes en Cobranza (U)
+      false, // Cancelado (V) -> ¡NUEVA!
+      fila[indices.rfc], // RFC (W)
+      fila[indices.ramo] // Ramo (X)
+    ];
+  });
+
+  return [nuevosEncabezados, ...datosTransformados];
+}
+
+/**
+ * Escribe los datos en BD, calcula las fórmulas relativas,
+ * aplica checkboxes y oculta columnas técnicas.
+ */
+function guardarEnBD(datos) {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaBD = libro.getSheetByName('BD');
+
+  if (!hojaBD) throw new Error('No se encontró la pestaña BD');
+
+  hojaBD.clear();
+
+  const datosAjustados = datos.map((fila, index) => {
+    if (index === 0) return fila;
+    const nuevaFila = [...fila];
+    const filaHoja = index + 1;
+    nuevaFila[16] = `=(P${filaHoja}-C${filaHoja})/C${filaHoja}`;
+    return nuevaFila;
+  });
+
+  hojaBD.getRange(1, 1, datosAjustados.length, datosAjustados[0].length).setValues(datosAjustados);
+
+  const numFilas = datosAjustados.length - 1;
+  if (numFilas > 0) {
+    hojaBD.getRange(2, 13, numFilas, 1).insertCheckboxes(); // M: Descargada
+    hojaBD.getRange(2, 14, numFilas, 1).insertCheckboxes(); // N: Capturada
+    hojaBD.getRange(2, 19, numFilas, 1).insertCheckboxes(); // S: Promesa
+    hojaBD.getRange(2, 20, numFilas, 1).insertCheckboxes(); // T: Pagado
+    hojaBD.getRange(2, 21, numFilas, 1).insertCheckboxes(); // U: Pendientes en Cobranza
+    hojaBD.getRange(2, 22, numFilas, 1).insertCheckboxes(); // V: Cancelado
+    hojaBD.getRange(2, 17, numFilas, 1).setNumberFormat("0.00%"); // Q: %
+  }
+
+  hojaBD.hideColumns(9);  // I: Clave de Agente
+  hojaBD.hideColumns(23); // W: RFC (Recorrido por 'Cancelado')
+  hojaBD.hideColumns(24); // X: Ramo (Recorrido por 'Cancelado')
+}
+
+/**
+ * Función para probar que la transformación y el cálculo de edad funcionan
+ */
+function probarTransformacion() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const config = obtenerConfig();
+    const idCarpeta = config['CarpetaEntrada'];
+    const idCobranzapp = config['ArchivoCobranzapp'];
+
+    const clavesValidas = obtenerClavesValidas(idCobranzapp);
+    const archivosXLSX = DriveApp.getFolderById(idCarpeta).searchFiles("title contains '.xlsx' and trashed = false");
+    if (!archivosXLSX.hasNext()) throw new Error('No hay archivos para probar.');
+
+    const archivo = archivosXLSX.next();
+    const resultadoExcel = leerExcelTemporal(archivo);
+
+    const encabezados = resultadoExcel.datos[0];
+    const datosFiltrados = filtrarDatosPorClave(resultadoExcel.datos, clavesValidas);
+
+    // Aplicamos la transformación
+    const tablaFinal = transformarDatos(datosFiltrados, encabezados);
+
+    // Tomamos la primera póliza transformada para auditarla (Índice 1 porque el 0 son encabezados)
+    const clientePrueba = tablaFinal[1][0]; // Columna 0: Cliente
+    const edadPrueba = tablaFinal[1][10];   // Columna 10: Edad
+
+    ui.alert(`¡Datos Transformados! 🛠️\n\nEjemplo de la primera fila:\nCliente: ${clientePrueba}\nEdad calculada: ${edadPrueba} años.`);
+
+  } catch (error) {
+    ui.alert(`🚨 Error: ${error.message}`);
+  }
+}
+
+/**
+ * Módulo 3: Máquina del Tiempo.
+ * Detecta el mes más antiguo analizando la columna "Fecha inicio vigencia".
+ */
+function probarDetectorMeses() {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaBD = libro.getSheetByName('BD');
+
+  const datos = hojaBD.getDataRange().getValues();
+  if (datos.length < 2) return console.log('No hay datos en BD para analizar.');
+
+  const idxFecha = datos[0].indexOf('Fecha inicio vigencia');
+  let fechaMasAntigua = null;
+
+  // Buscamos la fecha menor de toda la tabla
+  for (let i = 1; i < datos.length; i++) {
+    let valor = datos[i][idxFecha];
+    if (!valor) continue;
+
+    let fechaObj = new Date(valor);
+    if (!isNaN(fechaObj.getTime())) {
+      if (!fechaMasAntigua || fechaObj < fechaMasAntigua) {
+        fechaMasAntigua = fechaObj;
+      }
+    }
+  }
+
+  if (fechaMasAntigua) {
+    const meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+    console.log(`⏱️ Máquina del Tiempo ⏱️\nEl mes base detectado en la BD es: ${meses[fechaMasAntigua.getMonth()]} del ${fechaMasAntigua.getFullYear()}`);
+  } else {
+    console.log('🚨 No encontré fechas válidas en la columna.');
+  }
+}
+
+/**
+ * Se conecta a Cobranzapp y devuelve un "Set" (lista ultra rápida) con las pólizas
+ * que tienen recibos en estado 'Pendiente' (ignorando recibos 11 y 12).
+ */
+function obtenerPolizasPendientes(idCobranzapp) {
+  const libroCobranzapp = SpreadsheetApp.openById(idCobranzapp);
+  const hojaCobranza = libroCobranzapp.getSheetByName('BD_Cobranza');
+
+  if (!hojaCobranza) throw new Error('No se encontró BD_Cobranza en Cobranzapp');
+
+  const datosCobranza = hojaCobranza.getDataRange().getValues();
+  const encabezados = datosCobranza[0];
+
+  const idxPoliza = encabezados.indexOf('Póliza');
+  const idxEstado = encabezados.indexOf('Estado_Cobranza');
+  const idxSerieRecibo = encabezados.indexOf('Serie recibo');
+
+  if (idxPoliza === -1 || idxEstado === -1 || idxSerieRecibo === -1) {
+    throw new Error('Faltan columnas clave en BD_Cobranza (Póliza, Estado_Cobranza o Serie recibo).');
+  }
+
+  const polizasPendientes = new Set();
+
+  // Recorremos la base de datos (ignorando la fila 1 de encabezados)
+  for (let i = 1; i < datosCobranza.length; i++) {
+    const estado = datosCobranza[i][idxEstado].toString().trim();
+    const serieRecibo = datosCobranza[i][idxSerieRecibo].toString().trim();
+    const poliza = datosCobranza[i][idxPoliza].toString().trim();
+
+    if (estado === 'Pendiente' && serieRecibo !== '11' && serieRecibo !== '12') {
+      polizasPendientes.add(poliza);
+    }
+  }
+
+  return polizasPendientes;
+}
+
+
+/**
+ * Función para probar que el cruce con Cobranzapp es exitoso
+ */
+function probarCobranzapp() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const config = obtenerConfig();
+    const idCarpeta = config['CarpetaEntrada'];
+    const idCobranzapp = config['ArchivoCobranzapp'];
+
+    // 1. Obtenemos las reglas de juego
+    const clavesValidas = obtenerClavesValidas(idCobranzapp);
+    const polizasPendientesSet = obtenerPolizasPendientes(idCobranzapp);
+
+    // 2. Leemos el archivo
+    const archivosXLSX = DriveApp.getFolderById(idCarpeta).searchFiles("title contains '.xlsx' and trashed = false");
+    if (!archivosXLSX.hasNext()) throw new Error('No hay archivos para probar.');
+
+    const archivo = archivosXLSX.next();
+    const resultadoExcel = leerExcelTemporal(archivo);
+
+    // 3. Filtramos y transformamos
+    const encabezados = resultadoExcel.datos[0];
+    const datosFiltrados = filtrarDatosPorClave(resultadoExcel.datos, clavesValidas);
+    const tablaFinal = transformarDatos(datosFiltrados, encabezados, polizasPendientesSet);
+
+    // Contamos cuántas pólizas resultaron con TRUE en Cobranzapp
+    let pendientesEncontradas = 0;
+    // Iteramos desde 1 para saltar encabezados, el índice 19 es la columna "Cobranzapp"
+    for(let i = 1; i < tablaFinal.length; i++){
+      if(tablaFinal[i][19] === true) pendientesEncontradas++;
+    }
+
+    ui.alert(`¡Cruce con Cobranzapp Exitoso! 🏦\n\nDe las ${datosFiltrados.length} pólizas válidas, detectamos que ${pendientesEncontradas} tienen recibos pendientes (ignorando serie 11 y 12).`);
+
+  } catch (error) {
+    ui.alert(`🚨 Error: ${error.message}`);
+  }
+}
+
+/**
+ * Lee la pestaña "Asignacion_Renovas" para saber qué reportes generar y sus reglas.
+ */
+function obtenerConfiguracionReportes() {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaAsignacion = libro.getSheetByName('Asignacion_Renovas');
+
+  if (!hojaAsignacion) throw new Error('No se encontró la pestaña Asignacion_Renovas');
+
+  const datos = hojaAsignacion.getDataRange().getValues();
+  const encabezados = datos[0];
+
+  // Ubicamos las columnas clave
+  const idxReporte = encabezados.indexOf('Reporte');
+  const idxRamos = encabezados.indexOf('Ramos_Asignados');
+  const idxGenerar = encabezados.indexOf('Generar_Reporte');
+  const idxMeses = encabezados.indexOf('Meses');
+  const idxEmails = encabezados.indexOf('Emails_Destino');
+
+  const reportesConfig = [];
+
+  // Empezamos desde la fila 1 para saltar encabezados
+  for (let i = 1; i < datos.length; i++) {
+    const fila = datos[i];
+
+    // Solo tomamos los que tienen el Checkbox activo (TRUE)
+    if (fila[idxGenerar] === true || fila[idxGenerar].toString().toUpperCase() === 'TRUE') {
+      reportesConfig.push({
+        nombre: fila[idxReporte].toString().trim(),
+        // Convertimos el texto "AUTOS, FLOTILLAS" en un arreglo de palabras reales
+        ramos: fila[idxRamos].toString().split(',').map(r => r.trim()),
+        mesesCarga: parseInt(fila[idxMeses], 10) || 1,
+        emails: fila[idxEmails].toString().trim()
+      });
+    }
+  }
+
+  return reportesConfig;
+}
+
+/**
+ * Separa la base de datos maestra en los diferentes reportes,
+ * aplicando el filtro de Ramos. Si un reporte pide varios meses (ej. 2),
+ * crea un paquete independiente por cada mes.
+ */
+function separarDatosPorReporte(datosBD, configReportes) {
+  const encabezados = datosBD[0];
+  const idxFecha = encabezados.indexOf('Fecha inicio vigencia');
+  const idxRamo = encabezados.indexOf('Ramo');
+
+  const reportesGenerados = [];
+
+  configReportes.forEach(config => {
+    const filasDelRamo = datosBD.slice(1).filter(fila => {
+      const ramoFila = fila[idxRamo] ? fila[idxRamo].toString().trim() : '';
+      return config.ramos.includes(ramoFila);
+    });
+
+    if (filasDelRamo.length === 0) return;
+
+    let fechaMinima = null;
+    filasDelRamo.forEach(fila => {
+      let fecha = new Date(fila[idxFecha]);
+      if (!isNaN(fecha.getTime())) {
+        if (!fechaMinima || fecha < fechaMinima) {
+          fechaMinima = fecha;
+        }
+      }
+    });
+
+    if (!fechaMinima) return;
+
+    const mesBase = fechaMinima.getMonth();
+    const anioBase = fechaMinima.getFullYear();
+
+    // Bucle para crear un reporte separado por cada mes solicitado en la configuración
+    for (let m = 0; m < config.mesesCarga; m++) {
+      let mesTemp = (mesBase + m) % 12;
+      let anioTemp = (mesBase + m > 11) ? anioBase + 1 : anioBase;
+
+      const filasMes = filasDelRamo.filter(fila => {
+        let fecha = new Date(fila[idxFecha]);
+        if (isNaN(fecha.getTime())) return false;
+        return fecha.getMonth() === mesTemp && fecha.getFullYear() === anioTemp;
+      });
+
+      if (filasMes.length > 0) {
+        // Creamos una fecha representativa para el mes actual del bucle
+        let fechaPaquete = new Date(anioTemp, mesTemp, 1);
+
+        reportesGenerados.push({
+          nombre: config.nombre,
+          encabezados: encabezados,
+          datos: filasMes,
+          fechaBase: fechaPaquete,
+          emails: config.emails
+        });
+      }
+    }
+  });
+
+  return reportesGenerados;
+}
+
+
+/**
+ * Función de prueba para validar en consola la separación
+ */
+function probarSeparador() {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaBD = libro.getSheetByName('BD');
+  const datosBD = hojaBD.getDataRange().getValues();
+
+  if (datosBD.length < 2) return console.log('La BD está vacía.');
+
+  try {
+    const configReportes = obtenerConfiguracionReportes();
+    const paquetes = separarDatosPorReporte(datosBD, configReportes);
+
+    console.log(`📦 Se empaquetaron ${paquetes.length} reportes listos para enviar a carpetas:`);
+
+    const nombresMeses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+
+    paquetes.forEach(paquete => {
+      let mesStr = nombresMeses[paquete.fechaBase.getMonth()];
+      let anioStr = paquete.fechaBase.getFullYear();
+      console.log(`✅ Reporte ${paquete.nombre}: ${paquete.datos.length} pólizas. (Base: ${mesStr} ${anioStr})`);
+    });
+
+  } catch (e) {
+    console.log(`🚨 Error: ${e.message}`);
+  }
+}
+
+/**
+ * Busca una subcarpeta por nombre dentro de un padre. Si no existe, la crea.
+ */
+function obtenerOCrearSubcarpeta(carpetaPadre, nombreSubcarpeta) {
+  // Limpiamos espacios extra por si acaso
+  const nombreLimpio = nombreSubcarpeta.toString().trim();
+  const carpetas = carpetaPadre.getFoldersByName(nombreLimpio);
+
+  if (carpetas.hasNext()) {
+    return carpetas.next(); // Ya existe, la devolvemos
+  } else {
+    return carpetaPadre.createFolder(nombreLimpio); // No existe, la creamos
+  }
+}
+
+/**
+ * Devuelve el mes en formato "07 JULIO" o "08 AGOSTO"
+ */
+function formatearMes(fecha) {
+  const meses = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
+  // Le sumamos 1 al mes (porque Enero es 0) y le ponemos un 0 a la izquierda si es de un dígito
+  const numeroMes = (fecha.getMonth() + 1).toString().padStart(2, '0');
+  return `${numeroMes} ${meses[fecha.getMonth()]}`;
+}
+
+/**
+ * Crea los archivos de Google Sheets con formatos premium y valida si ya existen.
+ */
+function generarArchivosReportes(paquetes, idCarpetaRaiz) {
+  const carpetaRaiz = DriveApp.getFolderById(idCarpetaRaiz);
+
+  paquetes.forEach(paquete => {
+    const anioRenovacion = (paquete.fechaBase.getFullYear() + 1).toString();
+    const mesStr = formatearMes(paquete.fechaBase);
+    const nombreArchivo = `Renovaciones ${paquete.nombre} - ${mesStr} ${anioRenovacion}`;
+
+    const carpetaAnio = obtenerOCrearSubcarpeta(carpetaRaiz, anioRenovacion);
+    const carpetaReporte = obtenerOCrearSubcarpeta(carpetaAnio, paquete.nombre);
+    const carpetaMes = obtenerOCrearSubcarpeta(carpetaReporte, mesStr);
+
+    // VALIDACIÓN: Si el archivo ya existe en esta carpeta, nos lo saltamos.
+    const archivosExistentes = carpetaMes.searchFiles(`title = "${nombreArchivo}" and trashed = false`);
+    if (archivosExistentes.hasNext()) {
+      console.log(`⚠️ OMITIDO: El archivo "${nombreArchivo}" ya existe en Drive.`);
+      return; // Saltamos al siguiente paquete
+    }
+
+    if (paquete.nombre.toUpperCase() === 'GMM') {
+      const idxAseguradora = paquete.encabezados.indexOf('Aseguradora');
+      const idxCliente = paquete.encabezados.indexOf('Cliente');
+      paquete.datos.forEach(fila => {
+        const aseguradora = fila[idxAseguradora] ? fila[idxAseguradora].toString().trim() : 'SIN_ASEGURADORA';
+        const cliente = fila[idxCliente] ? fila[idxCliente].toString().trim() : 'SIN_CLIENTE';
+        const carpetaAseg = obtenerOCrearSubcarpeta(carpetaMes, aseguradora);
+        obtenerOCrearSubcarpeta(carpetaAseg, cliente);
+      });
+    }
+
+    const nuevoSpreadsheet = SpreadsheetApp.create(nombreArchivo);
+    const idNuevo = nuevoSpreadsheet.getId();
+
+    DriveApp.getFileById(idNuevo).moveTo(carpetaMes);
+
+    const hoja = nuevoSpreadsheet.getSheets()[0];
+    hoja.setName(`Reporte ${paquete.nombre}`);
+
+    const tablaFinal = [paquete.encabezados, ...paquete.datos];
+    const idxEdad = paquete.encabezados.indexOf('Edad');
+
+    const tablaAjustada = tablaFinal.map((fila, index) => {
+      if (index === 0) return fila;
+      const nuevaFila = [...fila];
+      const filaHoja = index + 1;
+      nuevaFila[16] = `=(P${filaHoja}-C${filaHoja})/C${filaHoja}`;
+
+      // LÓGICA GMM: Vaciar la columna Edad
+      if (paquete.nombre.toUpperCase() === 'GMM' && idxEdad !== -1) {
+        nuevaFila[idxEdad] = '';
+      }
+      return nuevaFila;
+    });
+
+    const totalColumnas = tablaAjustada[0].length;
+    const numFilas = paquete.datos.length;
+    const rangoCompleto = hoja.getRange(1, 1, numFilas + 1, totalColumnas);
+
+    rangoCompleto.setValues(tablaAjustada);
+
+    // --- FORMATO GENERAL DE HOJA ---
+    rangoCompleto.setFontFamily("Calibri").setFontSize(10);
+    rangoCompleto.setVerticalAlignment("middle").setHorizontalAlignment("center"); // Todo centrado
+    rangoCompleto.setBorder(true, true, true, true, true, true); // Bordes en toda la tabla
+
+    // Alineación a la izquierda para columnas específicas
+    if (numFilas > 0) {
+      hoja.getRange(2, 1, numFilas, 1).setHorizontalAlignment("left");  // Col A: Cliente
+      hoja.getRange(2, 7, numFilas, 1).setHorizontalAlignment("left");  // Col G: Vendedor
+      hoja.getRange(2, 10, numFilas, 1).setHorizontalAlignment("left"); // Col J: Concepto
+      hoja.getRange(2, 18, numFilas, 1).setHorizontalAlignment("left"); // Col R: Seguimiento
+    }
+
+    hoja.getRange("1:1").setWrap(true).setFontWeight("bold");
+    rangoCompleto.createFilter(); // 👈 Activar AutoFiltro
+
+    if (numFilas > 0) {
+      hoja.getRange(2, 4, numFilas, 2).setNumberFormat("d/m/yyyy"); // Fechas
+
+      hoja.getRange(2, 13, numFilas, 1).insertCheckboxes(); // M
+      hoja.getRange(2, 14, numFilas, 1).insertCheckboxes(); // N
+      hoja.getRange(2, 19, numFilas, 1).insertCheckboxes(); // S
+      hoja.getRange(2, 20, numFilas, 1).insertCheckboxes(); // T
+      hoja.getRange(2, 21, numFilas, 1).insertCheckboxes(); // U
+      hoja.getRange(2, 22, numFilas, 1).insertCheckboxes(); // V
+      hoja.getRange(2, 17, numFilas, 1).setNumberFormat("0.00%");
+
+      const rangoDatos = hoja.getRange(2, 1, numFilas, totalColumnas);
+      const rangoFormaPago = hoja.getRange(2, 8, numFilas, 1);     // Col H
+      const rangoFormaCobro = hoja.getRange(2, 12, numFilas, 1);   // Col L
+
+      const reglas = [];
+
+      // 1. Cancelado (V) -> Light Red 2
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$V2=TRUE').setBackground('#f4cccc').setRanges([rangoDatos]).build());
+
+      // 2. Pagado (T) -> Light Green 1
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$T2=TRUE').setBackground('#d9ead3').setRanges([rangoDatos]).build());
+
+      // 3. Promesa (S) -> Light Cornflower Blue 1
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$S2=TRUE').setBackground('#c9daf8').setRanges([rangoDatos]).build());
+
+      // 4. Seguimiento tiene "tramite" (R) -> Light Blue 3
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=ISNUMBER(SEARCH("tramite", $R2))').setBackground('#9fc5e8').setRanges([rangoDatos]).build());
+
+      // 5. Descargada + Capturada + Enviada -> Light Yellow 1
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=AND($M2=TRUE, $N2=TRUE, $O2<>"")').setBackground('#fff2cc').setRanges([rangoDatos]).build());
+
+      // 6. Descargada -> Light Yellow 3
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$M2=TRUE').setBackground('#ffd966').setRanges([rangoDatos]).build());
+
+      // 7. Forma de pago MENSUAL -> Solo Forma de pago(H) -> Light Purple 3
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$H2="MENSUAL"').setBackground('#d9d2e9').setRanges([rangoFormaPago]).build());
+
+      // 8. Forma de cobro CAT -> Solo Forma de cobro(L) -> Light Purple 3
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$L2="CAT"').setBackground('#d9d2e9').setRanges([rangoFormaCobro]).build());
+
+      // 9. Pendiente Cobranza (U) y Prima renova(P) vacía -> Magenta
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=AND($U2=TRUE, ISBLANK($P2))').setBackground('#ff00ff').setRanges([rangoDatos]).build());
+
+      hoja.setConditionalFormatRules(reglas);
+    }
+
+    // --- LEYENDA DE COLORES INYECTADA ---
+    const filaLeyenda = numFilas + 6;
+    const datosLeyenda = [
+      ["", "Cancelado"],
+      ["", "Pagado"],
+      ["", "Promesa"],
+      ["", "Trámite (Seguimiento)"],
+      ["", "Proceso Completo (Des + Cap + Env)"],
+      ["", "Descargada"],
+      ["", "Cobro CAT o MENSUAL"],
+      ["", "Pendientes en Cobranza (Sin procesar)"]
+    ];
+
+    const rangoLeyenda = hoja.getRange(filaLeyenda, 1, datosLeyenda.length, 2);
+    rangoLeyenda.setValues(datosLeyenda);
+
+    const coloresLeyenda = ['#f4cccc', '#d9ead3', '#c9daf8', '#9fc5e8', '#fff2cc', '#ffd966', '#d9d2e9', '#ff00ff'];
+    hoja.getRange(filaLeyenda, 1, coloresLeyenda.length, 1).setBackgrounds(coloresLeyenda.map(c => [c]));
+
+    rangoLeyenda.setBorder(true, true, true, true, true, true);
+    rangoLeyenda.setWrap(true).setFontFamily("Calibri").setFontSize(10);
+
+    // --- UX: PANELES Y AUTOAJUSTES ---
+    hoja.setFrozenRows(1);
+    hoja.setFrozenColumns(1);
+
+    hoja.hideColumns(9);  // I: Clave de Agente
+    hoja.hideColumns(23); // W: RFC
+    hoja.hideColumns(24); // X: Ramo
+
+    for (let c = 1; c <= totalColumnas; c++) {
+      if (c !== 18) {
+        hoja.autoResizeColumn(c);
+      }
+    }
+
+    paquete.urlArchivo = nuevoSpreadsheet.getUrl();
+    console.log(`✅ Archivo creado: ${nombreArchivo}`);
+  });
+
+  return paquetes;
+}
+
+/**
+ * Prueba final del Módulo 4: Creación de archivos
+ */
+function probarGeneracionArchivos() {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const hojaBD = libro.getSheetByName('BD');
+  const datosBD = hojaBD.getDataRange().getValues();
+
+  if (datosBD.length < 2) return console.log('La BD está vacía.');
+
+  try {
+    const config = obtenerConfig();
+    const idCarpetaRaiz = config['UbicacionReportes'];
+
+    const configReportes = obtenerConfiguracionReportes();
+    const paquetes = separarDatosPorReporte(datosBD, configReportes);
+
+    console.log(`🚀 Iniciando generación de archivos de Google Sheets...`);
+    const paquetesConUrl = generarArchivosReportes(paquetes, idCarpetaRaiz);
+
+    console.log(`🎉 ¡Éxito! URLs generadas:`);
+    paquetesConUrl.forEach(p => console.log(`- ${p.nombre}: ${p.urlArchivo}`));
+
+  } catch (error) {
+    console.log(`🚨 Error: ${error.message}`);
+  }
+}
+
+
+/**
+ * Calcula los días laborales (lunes a viernes) entre dos fechas.
+ * Devuelve un número entero.
+ */
+function calcularDiasLaborales(fechaInicio, fechaFin) {
+  var dias = 0;
+  var actual = new Date(fechaInicio.getTime());
+
+  while (actual < fechaFin) {
+    var diaSemana = actual.getDay();
+    // Si no es Domingo (0) ni Sábado (6), contamos el día
+    if (diaSemana !== 0 && diaSemana !== 6) {
+      dias++;
+    }
+    actual.setDate(actual.getDate() + 1);
+  }
+  return dias;
+}
+
+function enviarSeguimientoRenovacion() {
+  console.log("[INFO] Iniciando ejecución de recordatorios GMM (Español).");
+  var nombreEtiqueta = "Seguimiento_Enviado";
+  var etiqueta = GmailApp.getUserLabelByName(nombreEtiqueta);
+  if (!etiqueta) {
+    etiqueta = GmailApp.createLabel(nombreEtiqueta);
+  }
+  var busqueda = 'subject:"// RENOVACION GMM" from:me -label:' + nombreEtiqueta + ' newer_than:10d';
+  var hilos = GmailApp.search(busqueda);
+
+  console.log("[INFO] Se encontraron " + hilos.length + " hilos pendientes de revisión en Gmail.");
+
+  var hoy = new Date();
+  var diasParaRecordatorio = 4;
+
+  for (var i = 0; i < hilos.length; i++) {
+    var hilo = hilos[i];
+    var mensajes = hilo.getMessages();
+    var asunto = hilo.getFirstMessageSubject();
+
+    console.log("\n[INFO] --- Evaluando Hilo " + (i + 1) + " ---");
+
+    // NUEVA REGLA: Si hay más de 1 mensaje, asumimos que el cliente contestó
+    // o Paola le dio seguimiento manual. Lo marcamos como respondido.
+    var clienteYaRespondio = (mensajes.length > 1);
+
+    if (clienteYaRespondio) {
+      console.log('[OMITIDO] El hilo ya tiene respuestas o seguimiento manual. Asunto: "' + asunto + '"');
+      hilo.addLabel(etiqueta);
+      console.log('[ETIQUETA] Se aplicó la etiqueta "' + nombreEtiqueta + '" para sacarlo del radar.');
+    } else {
+      var ultimoMensaje = mensajes[0]; // Como es el único, es el [0]
+      var fechaUltimoMensaje = ultimoMensaje.getDate();
+
+      // Calculamos usando la nueva función de días laborales
+      var diferenciaDias = calcularDiasLaborales(fechaUltimoMensaje, hoy);
+
+      if (diferenciaDias >= diasParaRecordatorio) {
+        console.log('[ACCIÓN] Han pasado ' + diferenciaDias + ' días LABORALES. Enviando recordatorio para Asunto: "' + asunto + '"');
+
+        var cuerpoRecordatorio = `<div dir="ltr"><div><span style="background-color:transparent;font-family:&quot;trebuchet ms&quot;,sans-serif">Hola</span><span class="gmail_default" style="background-color:transparent;font-family:&quot;trebuchet ms&quot;,sans-serif"></span><span style="background-color:transparent;font-family:&quot;trebuchet ms&quot;,sans-serif">,</span></div><div class="gmail_quote"><div dir="ltr"><div class="gmail_quote"><div dir="ltr"><div><font face="trebuchet ms, sans-serif"><br>Nos comunicamos de <a href="http://1SEGUROS.MX" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1SEGUROS.MX&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw0NHU5hnScOxP1Df4-WbUp0">1SEGUROS.MX</a> para asegurarnos de que haya recibido el correo electrónico sobre la renovación de su póliza de seguro de gastos médicos.<br><br>Le agradeceríamos si pudiera confirmar de recibido respondiendo a este correo a la brevedad posible. Si desea hacer algún cambio<span class="gmail_default" style="font-size:small">&nbsp;</span>o<span class="gmail_default" style="font-size:small">&nbsp;</span>tiene alguna duda<span class="gmail_default" style="font-size:small">,&nbsp;</span>por favor&nbsp;no dude en contactarnos; estaremos encantados de ayudarle.<br><br>¡Le deseamos un excelente día!</font></div><div><div><font face="trebuchet ms, sans-serif"><span class="gmail_default" style="font-family:&quot;trebuchet ms&quot;,sans-serif;font-size:small"><br></span></font></div><div><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><div dir="ltr"><div style="color:rgb(0,0,0);font-family:helvetica,arial,sans-serif;font-size:medium;max-width:470px;margin:8px 0px 8px 8px"><table border="0" cellspacing="0" cellpadding="0" width="470" style="width:470px"><tbody><tr valign="top"><td style="padding-left:10px;width:10px;padding-right:10px">&nbsp;&nbsp;<br><div style="text-align:center"></div></td><td style="border-right:1px solid rgb(221,75,57)"><br></td><td style="text-align:initial;font-stretch:normal;padding:0px 10px"><div><font color="#444444"><font size="2" face="arial black, sans-serif">Paola Fortuny&nbsp;</font><br><font size="2" style="font-family:arial,sans-serif">Ejecutivo de Gastos Médicos&nbsp;Mayores</font></font></div><div><font color="#444444" size="2" face="arial, sans-serif">Ejecutivo de Seguros Médicos</font></div><div><font color="#444444" size="2" face="arial, sans-serif">de&nbsp;<a href="http://1seguros.mx/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw2o2SO9fcwwNRy8xFj9jMnm">1SEGUROS.MX</a>,&nbsp;Agente de Seguros y de Fianzas S.A. DE C.V.</font></div><div style="padding:5px 0px"><font size="2" face="arial, sans-serif"><span style="text-align:initial"><font color="#444444">Teléfono</font></span><font color="#444444">&nbsp;y Whatsapp: +52 1 (999) 316 71 45</font><span style="text-align:initial;color:rgb(68,68,68);display:inline-block">Email:&nbsp;<a href="mailto:jose.gonzalez@1seguros.mx" style="color:rgb(17,85,204)" target="_blank">ejecutivo.gmm1@<wbr>1seguros.mx</a><br></span><font color="#444444" style="text-align:initial">&nbsp; &nbsp; &nbsp; <br>Web:&nbsp;</font><span style="text-align:initial;color:rgb(68,68,68);display:inline-block"><a href="http://1seguros.mx/" style="color:rgb(17,85,204);outline:none" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw2o2SO9fcwwNRy8xFj9jMnm">1seguros.mx</a><span>&nbsp;<br></span></span></font><font size="2" face="arial, sans-serif" style="text-align:initial;background-color:transparent"><span style="text-align:initial"><font color="#444444"><span><br></span>Dirección: Calle 21 x 20 y 22 #102 Col. Yucatán, CP. 97050, Mérida, Yucatán, México.<span class="gmail_default" style="font-family:tahoma,sans-serif"></span></font></span></font><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span></div></td></tr></tbody></table></div><div style="color:rgb(34,34,34);font-family:arial,sans-serif;font-size:12.8px;text-align:center"><div style="text-align:left;font-size:x-small"><a href="http://1seguros.mx/responsabilidades/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/responsabilidades/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw2Unkd2wJZfW9oYaHuv18ap">Consulte nuestras responsabilidades - http://1seguros.mx/<wbr>responsabilidades/</a></div><div style="text-align:left;font-size:x-small;color:rgb(17,85,204)"><a href="http://1seguros.mx/privacidad/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/privacidad/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw1ULg4jgFPWC6vOPbU2KFhm">Consulte nuestro aviso de privacidad - http://1seguros.mx/privacidad/</a><a href="http://1seguros.mx/privacidad/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/privacidad/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw1ULg4jgFPWC6vOPbU2KFhm"><br></a></div><div style="text-align:left;font-size:x-small;color:rgb(17,85,204)"><a href="http://1seguros.mx/legal/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/legal/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw3wVCxLfHH0J9eQugGunh0P">Consulte nuestro aviso legal - http://1seguros.mx/legal/</a></div><div style="text-align:left;font-size:x-small;color:rgb(17,85,204)"><font size="1"><a href="https://www.facebook.com/pg/1seguros.mx/reviews/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=https://www.facebook.com/pg/1seguros.mx/reviews/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw3feEGcAkSpxUbopkGRQRR7">Califíquenos en Facebook</a></font></div></div></div></div></div></div></div></div></div></div></div>`;
+
+        ultimoMensaje.replyAll("", { htmlBody: cuerpoRecordatorio });
+        hilo.addLabel(etiqueta);
+        console.log('[ETIQUETA] Se aplicó la etiqueta "' + nombreEtiqueta + '" tras enviar el recordatorio.');
+      } else {
+        console.log('[ESPERA] Han pasado ' + diferenciaDias + ' días LABORALES. Aún no se envía recordatorio para Asunto: "' + asunto + '"');
+      }
+    }
+  }
+  console.log("[INFO] Ejecución de Renovación Finalizada.\n");
+}
+
+function enviarSeguimientoRenewal() {
+  console.log("[INFO] Iniciando ejecución de recordatorios RENEWAL (Inglés).");
+  var nombreEtiqueta = "Seguimiento_Enviado";
+  var etiqueta = GmailApp.getUserLabelByName(nombreEtiqueta);
+  if (!etiqueta) {
+    etiqueta = GmailApp.createLabel(nombreEtiqueta);
+  }
+  var busqueda = 'subject:"// HEALTH INSURANCE RENEWAL" from:me -label:' + nombreEtiqueta + ' newer_than:10d';
+  var hilos = GmailApp.search(busqueda);
+
+  console.log("[INFO] Se encontraron " + hilos.length + " hilos pendientes de revisión en Gmail.");
+
+  var hoy = new Date();
+  var diasParaRecordatorio = 4;
+
+  for (var i = 0; i < hilos.length; i++) {
+    var hilo = hilos[i];
+    var mensajes = hilo.getMessages();
+    var asunto = hilo.getFirstMessageSubject();
+
+    console.log("\n[INFO] --- Evaluando Hilo " + (i + 1) + " ---");
+
+    var clienteYaRespondio = (mensajes.length > 1);
+
+    if (clienteYaRespondio) {
+      console.log('[OMITIDO] El hilo ya tiene respuestas o seguimiento manual. Asunto: "' + asunto + '"');
+      hilo.addLabel(etiqueta);
+      console.log('[ETIQUETA] Se aplicó la etiqueta "' + nombreEtiqueta + '" para sacarlo del radar.');
+    } else {
+      var ultimoMensaje = mensajes[0];
+      var fechaUltimoMensaje = ultimoMensaje.getDate();
+
+      var diferenciaDias = calcularDiasLaborales(fechaUltimoMensaje, hoy);
+
+      if (diferenciaDias >= diasParaRecordatorio) {
+        console.log('[ACCIÓN] Han pasado ' + diferenciaDias + ' días LABORALES. Enviando recordatorio para Asunto: "' + asunto + '"');
+
+        var cuerpoRecordatorio = `<div dir="ltr"><div><span style="background-color:transparent;font-family:&quot;trebuchet ms&quot;,sans-serif">Hello</span><span class="gmail_default" style="background-color:transparent;font-family:&quot;trebuchet ms&quot;,sans-serif"></span><span style="background-color:transparent;font-family:&quot;trebuchet ms&quot;,sans-serif">,</span></div><div class="gmail_quote"><div dir="ltr"><div class="gmail_quote"><div dir="ltr"><div><font face="trebuchet ms, sans-serif"><br>We are reaching out from <a href="http://1SEGUROS.MX" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1SEGUROS.MX&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw0NHU5hnScOxP1Df4-WbUp0">1SEGUROS.MX</a> to make sure you received the email regarding your health insurance policy renewal.<br><br>We would appreciate it if you could confirm receipt by replying to the email at your earliest convenience. If you would like to make any changes<span class="gmail_default" style="font-size:small">&nbsp;</span>or<span class="gmail_default" style="font-size:small">&nbsp;</span>have any questions<span class="gmail_default" style="font-size:small">,&nbsp;</span>please&nbsp;don't hesitate to contact us—we'll be happy to help.<br><br>Wishing you a great day!</font></div><div><div><font face="trebuchet ms, sans-serif"><span class="gmail_default" style="font-family:&quot;trebuchet ms&quot;,sans-serif;font-size:small"><br></span></font></div><div><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature"><div dir="ltr"><div style="color:rgb(0,0,0);font-family:helvetica,arial,sans-serif;font-size:medium;max-width:470px;margin:8px 0px 8px 8px"><table border="0" cellspacing="0" cellpadding="0" width="470" style="width:470px"><tbody><tr valign="top"><td style="padding-left:10px;width:10px;padding-right:10px">&nbsp;&nbsp;<br><div style="text-align:center"></div></td><td style="border-right:1px solid rgb(221,75,57)"><br></td><td style="text-align:initial;font-stretch:normal;padding:0px 10px"><div><font color="#444444"><font size="2" face="arial black, sans-serif">Paola Fortuny&nbsp;</font><br><font size="2" style="font-family:arial,sans-serif">Ejecutivo de Gastos Médicos&nbsp;Mayores</font></font></div><div><font color="#444444" size="2" face="arial, sans-serif">Health Insurance Executive</font></div><div><font color="#444444" size="2" face="arial, sans-serif">de&nbsp;<a href="http://1seguros.mx/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw2o2SO9fcwwNRy8xFj9jMnm">1SEGUROS.MX</a>,&nbsp;Agente de Seguros y de Fianzas S.A. DE C.V.</font></div><div style="padding:5px 0px"><font size="2" face="arial, sans-serif"><span style="text-align:initial"><font color="#444444">Teléfono</font></span><font color="#444444">&nbsp;y Whatsapp: +52 1 (999) 316 71 45</font><span style="text-align:initial;color:rgb(68,68,68);display:inline-block">Email:&nbsp;<a href="mailto:jose.gonzalez@1seguros.mx" style="color:rgb(17,85,204)" target="_blank">ejecutivo.gmm1@<wbr>1seguros.mx</a><br></span><font color="#444444" style="text-align:initial">&nbsp; &nbsp; &nbsp; <br>Web:&nbsp;</font><span style="text-align:initial;color:rgb(68,68,68);display:inline-block"><a href="http://1seguros.mx/" style="color:rgb(17,85,204);outline:none" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw2o2SO9fcwwNRy8xFj9jMnm">1seguros.mx</a><span>&nbsp;<br></span></span></font><font size="2" face="arial, sans-serif" style="text-align:initial;background-color:transparent"><span style="text-align:initial"><font color="#444444"><span><br></span>Address: Calle 21 x 20 y 22 #102 Col. Yucatán, CP. 97050, Mérida, Yucatán, México.<span class="gmail_default" style="font-family:tahoma,sans-serif"></span></font></span></font><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span><span style="text-align:initial;background-color:transparent;color:rgb(68,68,68);font-family:arial;font-size:14px">&nbsp;</span></div></td></tr></tbody></table></div><div style="color:rgb(34,34,34);font-family:arial,sans-serif;font-size:12.8px;text-align:center"><div style="text-align:left;font-size:x-small"><a href="http://1seguros.mx/responsabilidades/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/responsabilidades/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw2Unkd2wJZfW9oYaHuv18ap">Consulte nuestras responsabilidades - http://1seguros.mx/<wbr>responsabilidades/</a></div><div style="text-align:left;font-size:x-small;color:rgb(17,85,204)"><a href="http://1seguros.mx/privacidad/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/privacidad/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw1ULg4jgFPWC6vOPbU2KFhm">Consulte nuestro aviso de privacidad - http://1seguros.mx/privacidad/</a><a href="http://1seguros.mx/privacidad/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/privacidad/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw1ULg4jgFPWC6vOPbU2KFhm"><br></a></div><div style="text-align:left;font-size:x-small;color:rgb(17,85,204)"><a href="http://1seguros.mx/legal/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=http://1seguros.mx/legal/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw3wVCxLfHH0J9eQugGunh0P">Consulte nuestro aviso legal - http://1seguros.mx/legal/</a></div><div style="text-align:left;font-size:x-small;color:rgb(17,85,204)"><font size="1"><a href="https://www.facebook.com/pg/1seguros.mx/reviews/" style="color:rgb(17,85,204)" target="_blank" data-saferedirecturl="https://www.google.com/url?q=https://www.facebook.com/pg/1seguros.mx/reviews/&amp;source=gmail&amp;ust=1783099590646000&amp;usg=AOvVaw3feEGcAkSpxUbopkGRQRR7">Califíquenos en Facebook - Rate Us on Facebook</a></font></div></div></div></div></div></div></div></div></div></div></div>`;
+
+        ultimoMensaje.replyAll("", { htmlBody: cuerpoRecordatorio });
+        hilo.addLabel(etiqueta);
+        console.log('[ETIQUETA] Se aplicó la etiqueta "' + nombreEtiqueta + '" tras enviar el recordatorio.');
+      } else {
+        console.log('[ESPERA] Han pasado ' + diferenciaDias + ' días LABORALES. Aún no se envía recordatorio para Asunto: "' + asunto + '"');
+      }
+    }
+  }
+  console.log("[INFO] Ejecución de Renewal Finalizada.\n");
 }
