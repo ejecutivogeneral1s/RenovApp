@@ -33,7 +33,34 @@ function enviarCorreosReportes(paquetes) {
       return;
     }
 
-    // ... resto del código ...
+    const anioRenovacion = paquete.fechaBase.getFullYear() + 1;
+    const mesStr = formatearMes(paquete.fechaBase);
+    const asunto = `Nuevas Renovaciones: ${paquete.nombre} - ${mesStr} ${anioRenovacion}`;
+
+    // Armamos un correo bonito en HTML
+    const cuerpoHtml = `
+      <div style="font-family: Arial, sans-serif; color: #333;">
+        <h2 style="color: #2e6c80;">Hola, equipo de ${paquete.nombre}</h2>
+        <p>El reporte de renovaciones para <b>${mesStr} ${anioRenovacion}</b> ya está listo y procesado en el sistema.</p>
+        <p>Se procesaron un total de <b>${paquete.datos.length}</b> pólizas.</p>
+        <br>
+        <a href="${paquete.urlArchivo}" style="padding: 12px 20px; background-color: #4CAF50; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">Abrir Reporte en Google Sheets</a>
+        <br><br>
+        <p><i>Nota: Las filas marcadas en magenta tienen recibos pendientes en Cobranzapp.</i></p>
+        <hr style="border: none; border-top: 1px solid #eee;">
+        <p style="font-size: 12px; color: #888;">Mensaje generado automáticamente por Bot RenovApp 🤖</p>
+      </div>
+    `;
+
+    MailApp.sendEmail({
+      to: paquete.emails,
+      subject: asunto,
+      htmlBody: cuerpoHtml
+    });
+
+    console.log(`📧 Correo enviado a: ${paquete.emails}`);
+  });
+}
 ```
 
 ### Ventajas de esta solución:
@@ -43,29 +70,29 @@ function enviarCorreosReportes(paquetes) {
 
 ---
 
-## 3. Consideraciones Adicionales y Casos de Borde
+## 3. Consideraciones de Negocio y Reglas de Decisión
 
-Si bien la solución propuesta por Gemini es **correcta y recomendada** para solucionar el bug de forma inmediata, es importante analizar el impacto de esta solución en el comportamiento general del negocio:
+### Decisión de Negocio (Confirmada por el Usuario):
+Se ha determinado que si un archivo ya existe, es porque el equipo correspondiente lo creó con anterioridad y **no es necesario enviarles ningún correo** informando que el reporte no se volvió a generar. Por lo tanto, el comportamiento correcto y preferido por el negocio es **omitir el correo por completo**.
 
-### Caso de Borde A: ¿Se requiere notificar que el archivo ya existía?
-Al omitir el correo por completo, los equipos de Autos o Daños **no recibirán ninguna notificación** de que el proceso corrió. Si ellos esperaban ver su reporte diario/mensual, podrían pensar que el sistema falló.
-- **Solución Alternativa 1 (Recuperar Enlace Existente):** Si el archivo ya existe en Drive, en lugar de dejar `urlArchivo` como vacío, el módulo `generarArchivosReportes` podría buscar el archivo existente en Google Drive y retornar su URL original. De esta forma, el correo se envía de todos modos apuntando al reporte existente y correcto.
-- **Solución Alternativa 2 (Correo Informativo):** Si no se desea o no se puede buscar el archivo en Drive, se podría enviar un correo alternativo con un formato diferente que indique claramente: *"El reporte ya se encontraba generado previamente en la carpeta correspondiente"*, sin incluir un botón roto.
+Esto valida al 100% la lógica introducida en la **REGLA 2** de Gemini:
+```javascript
+if (!paquete.urlArchivo) {
+  console.log(`🚫 Correo omitido para ${paquete.nombre}: No se generó un nuevo archivo (ya existía).`);
+  return;
+}
+```
+Con esta regla, logramos exactamente el comportamiento de negocio deseado sin agregar ruido o correos innecesarios a la bandeja de entrada de los usuarios de AUTOS y DAÑOS.
 
-### Caso de Borde B: Robustez con `fechaBase`
+### Caso de Borde: Robustez con `fechaBase`
 En la función propuesta, se extrae el año y mes a través de `paquete.fechaBase`:
 ```javascript
 const anioRenovacion = paquete.fechaBase.getFullYear() + 1;
 ```
-Si un paquete es omitido y algunos de sus atributos obligatorios como `fechaBase` no se inicializaron o son inválidos, realizar llamadas sobre `fechaBase` (como `.getFullYear()`) en iteraciones fallidas podría provocar una excepción de tipo `TypeError: Cannot read properties of undefined (reading 'getFullYear')`.
-- **Ventaja de la regla de Gemini:** Al colocar el `if (!paquete.urlArchivo) return;` **antes** del procesamiento de `fechaBase`, se evita este posible error en tiempo de ejecución, ya que el ciclo pasa al siguiente elemento antes de intentar formatear la fecha de un paquete incompleto.
+Al colocar el `if (!paquete.urlArchivo) return;` **antes** del procesamiento de `fechaBase`, el script es sumamente robusto ("fail-safe"). Si un paquete fue omitido y alguno de sus atributos obligatorios como `fechaBase` no se inicializó correctamente, evitamos excepciones fatales en tiempo de ejecución de JavaScript (como `TypeError: Cannot read properties of undefined (reading 'getFullYear')`).
 
 ---
 
 ## 4. Conclusión y Recomendación Final
 
-La propuesta de Gemini es **100% válida, robusta y segura** para evitar el envío de enlaces rotos. Se sugiere integrarla tal cual se muestra.
-
-Si para las operaciones del negocio es crucial que los destinatarios reciban el enlace incluso si el archivo ya existía previamente, la solución a largo plazo debe ser:
-1. Modificar la lógica de creación de archivos para que, si el archivo ya existe en Drive, realice una consulta de búsqueda en Google Drive (`DriveApp.getFilesByName(...)`) para obtener el ID y la URL del archivo existente, asignándolo a `paquete.urlArchivo`.
-2. Mantener la validación de Gemini en la función de correos como un sistema de protección ("fail-safe") para garantizar que ningún correo con enlace inválido salga de la plataforma.
+La propuesta de Gemini es **100% válida, robusta y alineada perfectamente con las reglas del negocio**. Se ha procedido a actualizar y disponibilizar el código en el repositorio bajo el archivo `enviarCorreosReportes.js`.
