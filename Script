@@ -481,10 +481,14 @@ function guardarEnBD(datos) {
     return nuevaFila;
   });
 
+  hojaBD.getRange(1, 2, datosAjustados.length, 1).setNumberFormat("@"); // Col B: Póliza
   hojaBD.getRange(1, 1, datosAjustados.length, datosAjustados[0].length).setValues(datosAjustados);
 
   const numFilas = datosAjustados.length - 1;
   if (numFilas > 0) {
+    hojaBD.getRange(2, 2, numFilas, 1).setNumberFormat("@"); // Col B: Póliza
+    hojaBD.getRange(2, 3, numFilas, 1).setNumberFormat("$#,##0.00"); // Col C: Prima total
+    hojaBD.getRange(2, 16, numFilas, 1).setNumberFormat("$#,##0.00"); // Col P: Prima renova
     hojaBD.getRange(2, 13, numFilas, 1).insertCheckboxes(); // M: Descargada
     hojaBD.getRange(2, 14, numFilas, 1).insertCheckboxes(); // N: Capturada
     hojaBD.getRange(2, 19, numFilas, 1).insertCheckboxes(); // S: Promesa
@@ -866,6 +870,7 @@ function generarArchivosReportes(paquetes, idCarpetaRaiz) {
     const numFilas = paquete.datos.length;
     const rangoCompleto = hoja.getRange(1, 1, numFilas + 1, totalColumnas);
 
+    hoja.getRange(1, 2, numFilas + 1, 1).setNumberFormat("@"); // Col B: Póliza como Texto Plano
     rangoCompleto.setValues(tablaAjustada);
 
     // --- FORMATO GENERAL DE HOJA ---
@@ -885,6 +890,8 @@ function generarArchivosReportes(paquetes, idCarpetaRaiz) {
     rangoCompleto.createFilter(); // 👈 Activar AutoFiltro
 
     if (numFilas > 0) {
+      hoja.getRange(2, 3, numFilas, 1).setNumberFormat("$#,##0.00"); // Col C: Prima total
+      hoja.getRange(2, 16, numFilas, 1).setNumberFormat("$#,##0.00"); // Col P: Prima renova
       hoja.getRange(2, 4, numFilas, 2).setNumberFormat("d/m/yyyy"); // Fechas
 
       hoja.getRange(2, 13, numFilas, 1).insertCheckboxes(); // M
@@ -901,10 +908,10 @@ function generarArchivosReportes(paquetes, idCarpetaRaiz) {
 
       const reglas = [];
 
-      // 1. Cancelado (V) -> Light Red 2
-      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$V2=TRUE').setBackground('#f4cccc').setRanges([rangoDatos]).build());
+      // 1. Cancelado (V) -> Light Red 3 (#e6b8af)
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$V2=TRUE').setBackground('#e6b8af').setRanges([rangoDatos]).build());
 
-      // 2. Pagado (T) -> Light Green 1
+      // 2. Pagado (T) -> Light Green 1 (#d9ead3)
       reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$T2=TRUE').setBackground('#d9ead3').setRanges([rangoDatos]).build());
 
       // 3. Promesa (S) -> Light Cornflower Blue 1
@@ -913,11 +920,11 @@ function generarArchivosReportes(paquetes, idCarpetaRaiz) {
       // 4. Seguimiento tiene "tramite" (R) -> Light Blue 3
       reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=ISNUMBER(SEARCH("tramite", $R2))').setBackground('#9fc5e8').setRanges([rangoDatos]).build());
 
-      // 5. Descargada + Capturada + Enviada -> Light Yellow 1
-      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=AND($M2=TRUE, $N2=TRUE, $O2<>"")').setBackground('#fff2cc').setRanges([rangoDatos]).build());
+      // 5. Descargada + Capturada + Enviada -> Light Yellow 3 (#ffd966)
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=AND($M2=TRUE, $N2=TRUE, $O2<>"")').setBackground('#ffd966').setRanges([rangoDatos]).build());
 
-      // 6. Descargada -> Light Yellow 3
-      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$M2=TRUE').setBackground('#ffd966').setRanges([rangoDatos]).build());
+      // 6. Descargada -> Light Yellow 1 (#fff2cc)
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$M2=TRUE').setBackground('#fff2cc').setRanges([rangoDatos]).build());
 
       // 7. Forma de pago MENSUAL -> Solo Forma de pago(H) -> Light Purple 3
       reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$H2="MENSUAL"').setBackground('#d9d2e9').setRanges([rangoFormaPago]).build());
@@ -925,8 +932,8 @@ function generarArchivosReportes(paquetes, idCarpetaRaiz) {
       // 8. Forma de cobro CAT -> Solo Forma de cobro(L) -> Light Purple 3
       reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$L2="CAT"').setBackground('#d9d2e9').setRanges([rangoFormaCobro]).build());
 
-      // 9. Pendiente Cobranza (U) y Prima renova(P) vacía -> Magenta
-      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=AND($U2=TRUE, ISBLANK($P2))').setBackground('#ff00ff').setRanges([rangoDatos]).build());
+      // 9. Pendiente Cobranza (U) y Prima renova(P) vacía -> #ff8dff
+      reglas.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=AND($U2=TRUE, ISBLANK($P2))').setBackground('#ff8dff').setRanges([rangoDatos]).build());
 
       hoja.setConditionalFormatRules(reglas);
     }
@@ -947,7 +954,7 @@ function generarArchivosReportes(paquetes, idCarpetaRaiz) {
     const rangoLeyenda = hoja.getRange(filaLeyenda, 1, datosLeyenda.length, 2);
     rangoLeyenda.setValues(datosLeyenda);
 
-    const coloresLeyenda = ['#f4cccc', '#d9ead3', '#c9daf8', '#9fc5e8', '#fff2cc', '#ffd966', '#d9d2e9', '#ff00ff'];
+    const coloresLeyenda = ['#e6b8af', '#d9ead3', '#c9daf8', '#9fc5e8', '#ffd966', '#fff2cc', '#d9d2e9', '#ff8dff'];
     hoja.getRange(filaLeyenda, 1, coloresLeyenda.length, 1).setBackgrounds(coloresLeyenda.map(c => [c]));
 
     rangoLeyenda.setBorder(true, true, true, true, true, true);
