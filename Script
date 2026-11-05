@@ -50,7 +50,9 @@ function enviarCorreosReportes(paquetes) {
     MailApp.sendEmail({
       to: paquete.emails,
       subject: asunto,
-      htmlBody: cuerpoHtml
+      htmlBody: cuerpoHtml,
+      from: 'bot@1seguros.mx',
+      name: 'Bot 1seguros.mx'
     });
 
     console.log(`📧 Correo enviado a: ${paquete.emails}`);
@@ -70,21 +72,12 @@ function moverArchivoAProcesados(archivoExcel, idCarpetaProcesados) {
 
 /**
  * 🚀 LA FUNCIÓN MAESTRA 🚀
- * Orquesta todos los Módulos del 1 al 5.
- * ¡Híbrida! Funciona desde el Menú (con alertas) y desde el Editor (con logs).
+ * Orquesta todos los Módulos del 1 al 5 de forma desatendida.
  */
 function ejecutarRenovApp() {
-  let ui = null;
-  try {
-    ui = SpreadsheetApp.getUi(); // Intentamos cargar la interfaz gráfica
-  } catch (e) {
-    console.log("🖥️ Ejecutando en modo desarrollador (Editor de Apps Script)");
-  }
-
-  // Helper para mostrar mensajes donde corresponda
+  // Helper para mostrar mensajes en la consola
   const notificar = (mensaje) => {
-    if (ui) ui.alert(mensaje); // Si hay UI, muestra ventanita
-    console.log(`🔔 NOTIFICACIÓN: ${mensaje}`); // Siempre lo manda a la consola
+    console.log(`🔔 NOTIFICACIÓN: ${mensaje}`);
   };
 
   try {
@@ -210,7 +203,6 @@ function obtenerClavesValidas(idCobranzapp) {
  * Función temporal para probar la conexión
  */
 function probarConexion() {
-  const ui = SpreadsheetApp.getUi();
   try {
     const config = obtenerConfig();
     const idCobranzapp = config['ArchivoCobranzapp'];
@@ -219,9 +211,9 @@ function probarConexion() {
 
     const claves = obtenerClavesValidas(idCobranzapp);
 
-    ui.alert(`¡Conexión Exitosa! 🚀\nSe encontraron ${claves.length} claves en el catálogo de Cobranzapp.`);
+    console.log(`¡Conexión Exitosa! 🚀\nSe encontraron ${claves.length} claves en el catálogo de Cobranzapp.`);
   } catch (error) {
-    ui.alert(`🚨 Error: ${error.message}`);
+    console.log(`🚨 Error: ${error.message}`);
   }
 }
 
@@ -262,7 +254,6 @@ function leerExcelTemporal(archivoExcel) {
  * Función temporal para probar la lectura dinámica de la carpeta
  */
 function probarLecturaDinamica() {
-  const ui = SpreadsheetApp.getUi();
   try {
     // Leemos la configuración para saber dónde buscar
     const config = obtenerConfig();
@@ -291,13 +282,13 @@ function probarLecturaDinamica() {
     }
 
     if (archivosEncontrados === 0) {
-      ui.alert('No se encontraron archivos .xlsx en la carpeta de entrada.');
+      console.log('No se encontraron archivos .xlsx en la carpeta de entrada.');
     } else {
-      ui.alert(`¡Éxito! 🎉\nSe procesaron temporalmente ${archivosEncontrados} archivos:\n${mensajeResultados}`);
+      console.log(`¡Éxito! 🎉\nSe procesaron temporalmente ${archivosEncontrados} archivos:\n${mensajeResultados}`);
     }
 
   } catch (error) {
-    ui.alert(`🚨 Error: ${error.message}`);
+    console.log(`🚨 Error: ${error.message}`);
   }
 }
 
@@ -330,7 +321,6 @@ function filtrarDatosPorClave(datosExcel, clavesValidas) {
  * Función temporal para probar a nuestro "Filtro Portero"
  */
 function probarFiltroPortero() {
-  const ui = SpreadsheetApp.getUi();
   try {
     const config = obtenerConfig();
     const idCarpeta = config['CarpetaEntrada'];
@@ -352,7 +342,7 @@ function probarFiltroPortero() {
     // 3. Pasamos los datos por el filtro
     const datosFiltrados = filtrarDatosPorClave(resultadoExcel.datos, clavesValidas);
 
-    ui.alert(
+    console.log(
       `🛡️ Filtro Portero Aplicado 🛡️\n\n` +
       `Archivo leído: ${archivo.getName()}\n` +
       `Total original de pólizas: ${totalOriginal}\n` +
@@ -361,7 +351,7 @@ function probarFiltroPortero() {
     );
 
   } catch (error) {
-    ui.alert(`🚨 Error: ${error.message}`);
+    console.log(`🚨 Error: ${error.message}`);
   }
 }
 
@@ -507,7 +497,6 @@ function guardarEnBD(datos) {
  * Función para probar que la transformación y el cálculo de edad funcionan
  */
 function probarTransformacion() {
-  const ui = SpreadsheetApp.getUi();
   try {
     const config = obtenerConfig();
     const idCarpeta = config['CarpetaEntrada'];
@@ -530,10 +519,10 @@ function probarTransformacion() {
     const clientePrueba = tablaFinal[1][0]; // Columna 0: Cliente
     const edadPrueba = tablaFinal[1][10];   // Columna 10: Edad
 
-    ui.alert(`¡Datos Transformados! 🛠️\n\nEjemplo de la primera fila:\nCliente: ${clientePrueba}\nEdad calculada: ${edadPrueba} años.`);
+    console.log(`¡Datos Transformados! 🛠️\n\nEjemplo de la primera fila:\nCliente: ${clientePrueba}\nEdad calculada: ${edadPrueba} años.`);
 
   } catch (error) {
-    ui.alert(`🚨 Error: ${error.message}`);
+    console.log(`🚨 Error: ${error.message}`);
   }
 }
 
@@ -614,7 +603,6 @@ function obtenerPolizasPendientes(idCobranzapp) {
  * Función para probar que el cruce con Cobranzapp es exitoso
  */
 function probarCobranzapp() {
-  const ui = SpreadsheetApp.getUi();
   try {
     const config = obtenerConfig();
     const idCarpeta = config['CarpetaEntrada'];
@@ -643,10 +631,10 @@ function probarCobranzapp() {
       if(tablaFinal[i][19] === true) pendientesEncontradas++;
     }
 
-    ui.alert(`¡Cruce con Cobranzapp Exitoso! 🏦\n\nDe las ${datosFiltrados.length} pólizas válidas, detectamos que ${pendientesEncontradas} tienen recibos pendientes (ignorando serie 11 y 12).`);
+    console.log(`¡Cruce con Cobranzapp Exitoso! 🏦\n\nDe las ${datosFiltrados.length} pólizas válidas, detectamos que ${pendientesEncontradas} tienen recibos pendientes (ignorando serie 11 y 12).`);
 
   } catch (error) {
-    ui.alert(`🚨 Error: ${error.message}`);
+    console.log(`🚨 Error: ${error.message}`);
   }
 }
 
